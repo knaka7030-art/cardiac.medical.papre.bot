@@ -1,3 +1,24 @@
 {
-  "reported_pmids": {}
+  "reported_pmids": {
+    "43017810": {
+      "title": "Temporal Changes in Lipoprotein(a) Following Acute Coronary Syndrome: A Systematic Review and Meta-Analysis.",
+      "reported_at": "2026-11-14T18:10:16.200718"
+    },
+    "42085325": {
+      "title": "A nurse-coordinated intervention programme vs standard of care after an acute coronary syndrome: the ALLEPRE trial.",
+      "reported_at": "2026-11-14T18:10:16.200718"
+    },
+    "40038072": {
+      "title": "Socio-economic status, cardiovascular risk factors, and coronary atherosclerosis: a SCOT-HEART trial analysis.",
+      "reported_at": "2026-11-14T18:10:16.200718"
+    },
+    "43018066": {
+      "title": "Evaluating the Low-Density Lipoprotein Cholesterol Paradox in Heart Failure With Reduced Ejection Fraction.",
+      "reported_at": "2026-11-14T18:10:16.200718"
+    },
+    "42999996": {
+      "title": "Variability of lipoprotein(a) levels in patients with acute myocardial infarction between admission, discharge, and follow-up.",
+      "reported_at": "2026-11-14T18:10:16.200718"
+    }
+  }
 }
