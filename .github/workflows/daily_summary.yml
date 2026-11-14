@@ -1,0 +1,142 @@
+name: Daily Paper Summary and Email
+
+on:
+  schedule:
+    # 毎日UTC 20:00（日本時間 05:00）に予約。
+    # GitHubの混雑で起動が数時間遅れることがあるため、朝に届くよう早めに設定している。
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    # 手動実行用トリガー
+
+concurrency:
+  group: daily-summary
+  cancel-in-progress: false
+
+jobs:
+  run-summary:
+    # ubuntu-latest は Ubuntu 26 へ移行中のため、動作確認済みの 24.04 に固定
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Validate required secrets
+        run: |
+          missing=""
+          [ -z "$GEMINI_API_KEY" ] && missing="$missing GEMINI_API_KEY"
+          [ -z "$NCBI_EMAIL" ] && missing="$missing NCBI_EMAIL"
+          [ -z "$NCBI_API_KEY" ] && missing="$missing NCBI_API_KEY"
+          [ -z "$GMAIL_USERNAME" ] && missing="$missing GMAIL_USERNAME"
+          [ -z "$GMAIL_APP_PASSWORD" ] && missing="$missing GMAIL_APP_PASSWORD"
+          [ -z "$GMAIL_RECIPIENT" ] && missing="$missing GMAIL_RECIPIENT"
+          if [ -n "$missing" ]; then
+            echo "エラー: 以下のSecretsが設定されていません:$missing"
+            echo "Settings → Secrets and variables → Actions から設定してください。"
+            exit 1
+          fi
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
+          NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
+          GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run summarizer
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
+          NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
+        run: |
+          mkdir -p output
+          rm -f output/*.docx
+          python main.py
+
+      - name: Read run status
+        id: status
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          try:
+              st = json.load(open("run_status.json", encoding="utf-8"))
+          except Exception:
+              st = {"warnings": ["実行状況ファイルなし（途中で停止した可能性）"]}
+          warnings = st.get("warnings", [])
+          prefix = "⚠【要確認】" if warnings else ""
+          lines = []
+          if "summaries_total" in st:
+              lines.append(f"要約: {st['summaries_total'] - st.get('summaries_failed', 0)}/{st['summaries_total']}件成功")
+          if "fulltext" in st:
+              lines.append(f"PMC全文で要約: {st['fulltext']}件（残りは抄録のみ）")
+          if "unverified_numbers" in st:
+              lines.append(f"原文に見つからなかった数値: {st['unverified_numbers']}件（Word内に⚠表示）")
+          if st.get("models_used"):
+              lines.append("使用モデル: " + ", ".join(f"{k}×{v}" for k, v in st["models_used"].items()))
+          for w in warnings:
+              lines.append("⚠ " + w)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"subject_prefix={prefix}\n")
+              f.write("report<<EOF_REPORT\n" + "\n".join(lines) + "\nEOF_REPORT\n")
+          PY
+
+      - name: Find output file
+        id: find_file
+        run: |
+          WORD_FILE=$(ls -t output/*.docx 2>/dev/null | head -n 1 || true)
+          if [ -z "$WORD_FILE" ] || [ ! -f "$WORD_FILE" ]; then
+            echo "本日の新規論文はありませんでした。メール送信をスキップします。"
+            echo "file_found=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "file_path=$WORD_FILE" >> $GITHUB_OUTPUT
+          echo "file_name=$(basename $WORD_FILE)" >> $GITHUB_OUTPUT
+          echo "file_found=true" >> $GITHUB_OUTPUT
+
+      - name: Send Summary via Email
+        if: steps.find_file.outputs.file_found == 'true'
+        uses: dawidd6/action-send-mail@v24
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: ${{ steps.status.outputs.subject_prefix }}🩺【医学論文レビュー】新着の論文要約をお届けします
+          to: ${{ secrets.GMAIL_RECIPIENT }}
+          # v24では表示名だけの from が拒否されるため「表示名 <アドレス>」の形式で指定する
+          from: "AI論文要約システム <${{ secrets.GMAIL_USERNAME }}>"
+          body: |
+            本日の最新医学論文の要約が完了しました。
+            添付のWordファイル（${{ steps.find_file.outputs.file_name }}）をご確認ください。
+
+            【実行状況】
+            ${{ steps.status.outputs.report }}
+
+            --
+            自動生成: GitHub Actions
+          attachments: ${{ steps.find_file.outputs.file_path }}
+
+      - name: Save history
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add history.json
+          git commit -m "chore: Update paper history" || echo "No changes to commit"
+          git pull --rebase --autostash origin ${{ github.ref_name }}
+          git push
